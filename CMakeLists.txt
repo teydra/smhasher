@@ -879,7 +879,7 @@ if(NOT (CMAKE_CROSSCOMPILING) OR QEMU_TESTING)
   add_executable(CollisionAttackTest collision_attack_test.cpp)
   add_test(CollisionAttackRegression CollisionAttackTest)
   find_program(PYTHON3_EXECUTABLE NAMES python3 python)
-  if(PYTHON3_EXECUTABLE)
+  if(PYTHON3_EXECUTABLE AND NOT MSVC)
     # builds the native oracle of collision_prover.py on demand, then runs the quick self test
     add_test(NAME CollisionProverBuild
              COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target CollisionProverVerify)
