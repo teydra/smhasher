@@ -17,6 +17,9 @@ on:
       jobs:
         description: parallel attacks
         default: '2'
+      expect_sha:
+        description: 'full commit SHA the branch head must have; the run fails if the checkout differs'
+        default: ''
 
 jobs:
   prover:
@@ -29,8 +32,20 @@ jobs:
         fetch-depth: 1
         submodules: recursive
     - name: commit under test
+      env:
+        BRANCH: ${{ inputs.branch }}
+        EXPECT_SHA: ${{ inputs.expect_sha }}
       run: |
-        echo "branch ${{ inputs.branch }} commit $(git rev-parse HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
+        # NB: the run page / `gh run list` show the head SHA of the workflow ref (teydra-ci), not of the
+        # tested branch. The proof of what was built is this step: the checked out HEAD.
+        HEAD_SHA=$(git rev-parse HEAD)
+        echo "TESTED_BRANCH=$BRANCH TESTED_SHA=$HEAD_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+        git log -1 --format='%H %s'
+        echo "tracked .pyc/__pycache__ files: $(git ls-files | grep -cE '\.pyc$|__pycache__' || true)"
+        if [ -n "$EXPECT_SHA" ] && [ "$EXPECT_SHA" != "$HEAD_SHA" ]; then
+          echo "::error::checked out $HEAD_SHA but expected $EXPECT_SHA"; exit 1
+        fi
+        [ -z "$EXPECT_SHA" ] || echo "SHA CHECK OK: built commit == expected commit $EXPECT_SHA"
     - name: tools
       run: |
         python3 --version
