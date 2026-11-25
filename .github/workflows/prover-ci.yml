@@ -28,6 +28,9 @@ jobs:
         ref: ${{ inputs.branch }}
         fetch-depth: 1
         submodules: recursive
+    - name: commit under test
+      run: |
+        echo "branch ${{ inputs.branch }} commit $(git rev-parse HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
     - name: tools
       run: |
         python3 --version
