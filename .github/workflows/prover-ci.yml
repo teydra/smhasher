@@ -1,0 +1,73 @@
+name: prover-ci
+# Fork-only harness (default branch teydra-ci of teydra/smhasher; never part of a pull request):
+# builds one branch of this fork on Linux exactly like upstream CI does, runs the collision prover
+# with its 2 minute limit per hash, and shows what testquality.pl makes of the result.
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: branch of this fork to build and run
+        required: true
+      names:
+        description: 'hashes or hash:goal, space separated (empty = everything registered)'
+        default: ''
+      timeout:
+        description: seconds per (hash, goal)
+        default: '120'
+      jobs:
+        description: parallel attacks
+        default: '2'
+
+jobs:
+  prover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ inputs.branch }}
+        fetch-depth: 1
+        submodules: recursive
+    - name: tools
+      run: |
+        python3 --version
+        python3 -m pip install --user z3-solver pycryptodome || true
+        python3 -c "import z3; print('z3', z3.get_version_string())" || true
+        lscpu | grep -E 'Model name|^CPU\(s\)'; free -g | head -2
+    - name: build the native oracle
+      run: |
+        cmake -DGITHUB_ACTIONS=ON .
+        make -j4 CollisionProverVerify
+        ./CollisionProverVerify FNV1a 0 00
+    - name: self test
+      run: python3 collision_prover.py --selftest
+    - name: prover table
+      env:
+        NAMES: ${{ inputs.names }}
+        TIMEOUT: ${{ inputs.timeout }}
+        JOBS: ${{ inputs.jobs }}
+      run: |
+        python3 collision_prover.py --jobs "$JOBS" --timeout "$TIMEOUT" $NAMES | tee prover-lines.txt || true
+        python3 collision_prover.py --jobs "$JOBS" --timeout "$TIMEOUT" --table $NAMES | tee prover-table.md || true
+        { echo '### collision prover'; cat prover-table.md; } >> "$GITHUB_STEP_SUMMARY"
+    - name: testquality sees it
+      env:
+        NAMES: ${{ inputs.names }}
+        TIMEOUT: ${{ inputs.timeout }}
+      run: |
+        for h in $(python3 collision_prover.py --list | awk '{print $1}' | sort -u); do
+          case " $NAMES " in *" $h "*|*" $h:"*|"  ") ;; *) continue ;; esac
+          { echo "--- Testing $h \"prover demo\" GOOD"; echo; python3 collision_prover.py --timeout "$TIMEOUT" --section "$h" || true; } > "doc/$h.txt"
+          perl testquality.pl "doc/$h.txt" | tee -a testquality-out.txt
+          cat "doc/$h.txt" >> prover-sections.txt
+        done
+        { echo '### testquality.pl'; echo '```'; cat testquality-out.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: prover-${{ github.run_id }}
+        path: |
+          prover-lines.txt
+          prover-table.md
+          prover-sections.txt
+          testquality-out.txt
