@@ -76,6 +76,19 @@ def selftest(native):
         names = core.Native.names()
     except Exception:
         pass
+    import random
+    rnd = random.Random(7)
+    for name, model in sorted(core.MODELS.items()):      # Python models against the compiled hashes
+        if native is None:
+            break
+        n = 0
+        for i in range(300):
+            key = bytes(rnd.getrandbits(8) for _ in range(rnd.choice([0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32,
+                                                                       33, 63, 64, 65, 127, 128, 129, 200])))
+            seed = rnd.choice([0, 1, rnd.getrandbits(32), rnd.getrandbits(32)])
+            n += native.hash(name, key, seed) != model(key, seed)
+        print("%s model %s: %d of 300 random keys differ from the native hash" % ("ok  " if not n else "FAIL", name, n))
+        bad += n > 0
     for (name, goal), atk in sorted(core.REGISTRY.items()):
         if names is not None and names.get(name) != atk.bits:
             print("FAIL %s: registered %d bits, native says %s" % (name, atk.bits, names.get(name)))

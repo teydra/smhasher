@@ -70,6 +70,16 @@ def attack(hash, goal, bits, method, expect="found", fast=True):
     return deco
 
 
+MODELS = {}
+
+
+def register_model(hash, fn):
+    """Register a Python reference model fn(key: bytes, seed: int) -> digest bytes (memory order of the
+    hash output, like the native oracle). The self test compares it with the compiled hash on random keys
+    and seeds, so a wrong model is caught before an attack built on it is trusted."""
+    MODELS[hash] = fn
+
+
 class Finding:
     """What an attack claims. keys: 1 key (preimage) or >= 2 distinct keys (collision).
     seeds: seeds the claim is made for; evals_log2: log2 of the number of hash

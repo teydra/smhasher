@@ -5,7 +5,7 @@ Every family lives in its own module prover/fam_<name>.py and registers its atta
 import importlib
 import pkgutil
 
-from .core import (attack, Attack, Finding, Context, Native, Timeout, REGISTRY, GOALS, GOAL_ALIAS,  # noqa: F401
+from .core import (attack, Attack, Finding, Context, Native, Timeout, REGISTRY, MODELS, register_model, GOALS, GOAL_ALIAS,  # noqa: F401
                    DEFAULT_TIMEOUT, run_attack, run_worker, section, line, target_for)
 
 _loaded = False

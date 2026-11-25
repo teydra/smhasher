@@ -7,7 +7,7 @@ and lattice reduction are folklore (e.g. Fowler-Noll-Vo hash page, "FNV-1a colli
 posts, Aumasson/Bernstein 2012 for hash flooding). Nothing here is new."""
 import math
 
-from .core import attack, Finding
+from .core import attack, Finding, register_model
 from .bv import mask, inv
 
 P32, B32 = 16777619, 0x811C9DC5
@@ -22,6 +22,9 @@ def fnv1a32(key, seed=0):
 
 def le32(h):
     return h.to_bytes(4, "little")
+
+
+register_model("FNV1a", lambda key, seed: le32(fnv1a32(key, seed)))
 
 
 @attack("FNV1a", "preimage", 32, method="meet in the middle: 2 free bytes forward, 2 free bytes backward")
