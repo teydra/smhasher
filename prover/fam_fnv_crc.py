@@ -233,7 +233,7 @@ def fnv64_sic(ctx):
     two keys must agree for all 256 values of low8(c_0). The increments d_i = (v_i - v_i') - (g(v_{i-1}) - g(v_i'))
     would have to be one fixed short lattice vector for every low8(c_0); XOR differences (the only thing a key
     difference controls) give integer differences whose sign depends on the data bits (only 0x80 commutes with g),
-    so no such pair of chains exists that I could construct. Nothing is tried at run time (returns None)."""
+    so no such pair of chains exists that I could construct. Experiment (one-off, not run in CI): for FNV1a 32 bit all 2^24 keys of length 1..3 were hashed for six values of low8(c_0)\n    (0,1,2,3,0x80,0xff); no two distinct keys agree on all six, i.e. there is no short structural pair. Nothing is\n    tried at run time (returns None)."""
     return None
 
 
