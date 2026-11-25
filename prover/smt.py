@@ -17,7 +17,8 @@ arithmetic on both (>> is a logical shift, + - * wrap). So the same function is
 
 Both honour `ctx.left()` (the z3 timeout is set to what is left of the attack's budget minus a small margin),
 re-compute the answer with the concrete model before returning it, and return None when z3 is missing, the
-problem is unsatisfiable, or the solver gives up (the reason stays in `smt.last_status`).
+problem is unsatisfiable, or the solver gives up (the reason stays in `smt.last_status`);
+with raise_timeout=True a solver that gave up raises core.Timeout instead, which the harness prints as 'not found (2 min)'.
 Optional `constraints=lambda key: [...]` fixes bytes of the key, e.g. `[key.bytes[0].eq(0x41), key.u(4, 4).eq(7)]`,
 which is how a family narrows the search to a key shape it understands (length, pinned words, ...).
 
@@ -35,7 +36,7 @@ Run `python -m prover.smt` for a self test (the z3 part is skipped when z3 is mi
 import math
 import time
 
-from .core import Finding
+from .core import Finding, Timeout
 
 try:                                    # optional dependency
     import z3
@@ -233,12 +234,20 @@ def _run(s, status_extra=""):
     return None
 
 
+def _gave_up(raise_timeout):
+    """z3 stopped without a model. With raise_timeout the attack ends through core.Timeout, which the harness
+    reports as 'not found (2 min)' (use it when the budget is the whole point, e.g. expect="notfound" attempts)."""
+    if raise_timeout and last_status.startswith("z3 gave up"):
+        raise Timeout()
+    return None
+
+
 def _evals_log2(elapsed):
     return math.log2(max(2.0, elapsed * WORK_RATE))
 
 
 def solve_preimage(model_fn, target, nbytes, timeout_s=None, ctx=None, seed=0, bits=None, constraints=None,
-                   work="z3 bit-vector solver"):
+                   work="z3 bit-vector solver", raise_timeout=False):
     """A key of `nbytes` bytes with model(key, seed) == target (bytes in memory order, or an int), or None.
     bits: digest width (default 8*len(target) for bytes)."""
     global last_status
@@ -261,7 +270,7 @@ def solve_preimage(model_fn, target, nbytes, timeout_s=None, ctx=None, seed=0, b
         s.add(c)
     m = _run(s)
     if m is None:
-        return None
+        return _gave_up(raise_timeout)
     k = key.value(m)
     if _digest(model_fn, Key.concrete(k), seed, bits) != tv:      # the z3 answer must hold in the concrete model
         last_status = "z3 answer failed the concrete model check"
@@ -272,7 +281,7 @@ def solve_preimage(model_fn, target, nbytes, timeout_s=None, ctx=None, seed=0, b
 
 
 def solve_collision(model_fn, nbytes, timeout_s=None, ctx=None, seeds=(0,), bits=64, constraints=None,
-                    work="z3 bit-vector solver"):
+                    work="z3 bit-vector solver", raise_timeout=False):
     """Two different keys (nbytes = int, or (n1, n2)) with equal digests for every seed in `seeds`, or None.
     `constraints(k1, k2)` may restrict both keys. With several seeds the result is a candidate for a
     seed-independent collision; the harness re-checks it natively on 16+ seeds."""
@@ -297,7 +306,7 @@ def solve_collision(model_fn, nbytes, timeout_s=None, ctx=None, seeds=(0,), bits
         s.add(c)
     m = _run(s)
     if m is None:
-        return None
+        return _gave_up(raise_timeout)
     a, b = k1.value(m), k2.value(m)
     ok = a != b
     for sd in seeds:

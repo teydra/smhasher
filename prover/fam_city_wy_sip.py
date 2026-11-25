@@ -8,10 +8,15 @@ Everything here rebuilds known ideas, nothing is new:
     32 bytes (the 17..32 byte path, HashLen17to32) the 128-bit state (u, v) that is fed to the final mixer can be
     chosen freely, and the mixer is built from bijective steps (odd multiplications, xor-shift), so it can be run
     backwards: a pre-image needs a handful of 64-bit operations.
-  * wyhash v4.2 with the default secret and WYHASH_CONDOM=1 ("blind multiplication"): when the first multiplication
-    is by zero (a ^ secret[1] == 0) the 128-bit product is 0 and the digest no longer depends on the other half of the
-    key nor on the seed. The wyhash author documents this as the 2^-63 entropy-loss case that WYHASH_CONDOM=2 avoids.
-    Keys that hit it on purpose collide for every seed.
+  * wyhash v4.2: the "blind multiplication" case is KNOWN and documented by the wyhash author (wyhash.h, comment at
+    WYHASH_CONDOM: "extra protection against entropy loss (probability=2^-63), aka. blind multiplication"). When
+    a ^ secret[1] == 0 the 128-bit product is 0 and the digest no longer depends on the other half of the key nor on the
+    seed. The collision hangs on the secret that SMHasher uses: the default secret _wyp, secret[1] = 0x8bb84b93962eacc9
+    (Hashes.h calls wyhash(key, len, seed, _wyp)); with another secret the colliding key prefix is another one.
+    What WYHASH_CONDOM changes: SMHasher builds with the default WYHASH_CONDOM=1, where _wymum() ASSIGNS the product
+    halves (*A = lo, *B = hi), so a zero operand wipes out the other operand. With WYHASH_CONDOM=2 it does *A ^= lo,
+    *B ^= hi, i.e. the inputs stay mixed into the result and the product 0 loses nothing; this collision then disappears
+    (digests change too, so the VerifyAll constant would differ). We rebuild a documented weakness, we do not discover it.
   * SipHash-2-4 is a keyed PRF; with a 32-bit seed as key material nothing is expected to fall. Attempts go through the
     generic z3 fall-back (prover/smt.py) and are reported as "not found (2 min)" unless z3 surprises us.
 """
@@ -109,32 +114,33 @@ def city64_collision(ctx):
     return Finding(ks, [ctx.seed], 4, "algebraic, same internal state (u,v); equal for every seed")
 
 
-# ---- extras: unseeded City64noSeed and the 32-bit City64low (same keys)
-@attack("City64noSeed", "preimage", 64, method="run HashLen17to32 backwards; 32-byte key, algebraic")
+# ---- extra table lines: City64noSeed and the 32-bit City64low use the SAME construction and the SAME keys as City64;
+# they are separate registry entries of SMHasher, not additional findings.
+@attack("City64noSeed", "preimage", 64, method="same construction as City64 (extra line, no new find): run HashLen17to32 backwards; 32-byte key")
 def city64noseed_preimage(ctx):
     x = _target64(ctx)
     key = city_key_with_unseeded_hash(x)
     assert city64(key) == x
-    return Finding([key], [ctx.seed], 4, "algebraic inversion, 32-byte key, no search")
+    return Finding([key], [ctx.seed], 4, "same construction as City64 (extra line): algebraic inversion, 32-byte key")
 
 
-@attack("City64noSeed", "collision", 64, method="same internal state (u,v) of HashLen17to32, 2 keys of 32 bytes")
+@attack("City64noSeed", "collision", 64, method="same construction as City64 (extra line, no new find): same state (u,v) of HashLen17to32, 2 keys of 32 bytes")
 def city64noseed_collision(ctx):
-    return Finding(_city_collision_keys(), [ctx.seed], 4, "algebraic, same internal state (u,v)")
+    return Finding(_city_collision_keys(), [ctx.seed], 4, "same construction as City64 (extra line): same state (u,v), 32-byte keys")
 
 
-@attack("City64low", "preimage", 32, method="run Hash128to64 and HashLen17to32 backwards (high 32 bits chosen 0)")
+@attack("City64low", "preimage", 32, method="same construction as City64 (extra line, no new find): run Hash128to64 and HashLen17to32 backwards, high 32 bits 0")
 def city64low_preimage(ctx):
     t = int.from_bytes(ctx.target[:4], "little")
     u = invert_hash128to64(t, ctx.seed & M64)
     key = city_key_with_unseeded_hash((u + K2) & M64)
-    return Finding([key], [ctx.seed], 4, "algebraic inversion, 32-byte key, no search")
+    return Finding([key], [ctx.seed], 4, "same construction as City64 (extra line): algebraic inversion, 32-byte key")
 
 
 @attack("City64low", "seed-independent collision", 32,
-        method="same unseeded CityHash64 => same low 32 bits for every seed, 2 keys of 32 bytes")
+        method="same construction as City64 (extra line, no new find): same unseeded CityHash64 => same low 32 bits for every seed, 2 keys of 32 bytes")
 def city64low_sic(ctx):
-    return Finding(_city_collision_keys(), [0], 4, "algebraic, same internal state (u,v); equal for every seed")
+    return Finding(_city_collision_keys(), [0], 4, "same construction as City64 (extra line): same state (u,v); equal for every seed")
 
 
 # =============================================================================== wyhash v4.2
@@ -151,28 +157,28 @@ def _wy_pair():
 
 
 @attack("wyhash", "seed-independent collision", 64,
-        method="'blind multiplication': a ^ secret[1] == 0 makes the product 0; two 9-byte keys differing in the last byte")
+        method="known 'blind multiplication' (documented by the author) with SMHasher's default secret: a ^ secret[1] == 0 makes the product 0; two 9-byte keys differing in the last byte")
 def wyhash_sic(ctx):
     """wyhash v4.2, 4 <= len <= 16: a = (r4(p)<<32)|r4(p+((len>>3)<<2)), b = (r4(p+len-4)<<32)|r4(p+len-4-((len>>3)<<2));
     _wymum(a ^ secret[1], b ^ seed') with seed' = seed ^ _wymix(seed ^ secret[0], secret[1]).
     If a == secret[1] the 128-bit product is 0 whatever b and seed' are, and the digest is _wymix(secret[0] ^ len, secret[1]),
     a constant that depends on the length only. For len == 9, a = bytes 0..7 and b depends on bytes 1..4 and 5..8,
     so the 9th byte is a free byte that only changes b: all 256 keys with a == secret[1] collide for EVERY seed
-    (probability 2^-64 for a random key; the author documents it and offers WYHASH_CONDOM=2 against it).
+    (probability 2^-64 for a random key; documented by the author, who offers WYHASH_CONDOM=2 against it; needs SMHasher's default secret and WYHASH_CONDOM=1, where _wymum assigns instead of xor-ing the product halves into the inputs).
     Shortest length: for len 4..7 a = (w << 32) | w cannot be secret[1]; for len == 8 b is a function of a
     (single key); for len 1..3 a has 24 bits."""
     ks = _wy_pair()
     for sd in (0, 1, 0xFFFFFFFF):
         assert mod.wyhash(ks[0], sd) == mod.wyhash(ks[1], sd)
-    return Finding(ks, [0], 2, "a ^ secret[1] == 0 => product 0 => constant digest per length, 9-byte keys")
+    return Finding(ks, [0], 2, "known blind multiplication (documented by the author), default secret: a ^ secret[1] == 0 => product 0, 9-byte keys")
 
 
 @attack("wyhash", "collision", 64,
-        method="'blind multiplication' (a ^ secret[1] == 0), two 9-byte keys differing in the last byte; same for every seed")
+        method="known 'blind multiplication' with SMHasher's default secret (a ^ secret[1] == 0), two 9-byte keys differing in the last byte; same for every seed")
 def wyhash_collision(ctx):
     ks = _wy_pair()
     assert mod.wyhash(ks[0], ctx.seed) == mod.wyhash(ks[1], ctx.seed)
-    return Finding(ks, [ctx.seed], 2, "a ^ secret[1] == 0 => product 0 => constant digest per length, 9-byte keys")
+    return Finding(ks, [ctx.seed], 2, "known blind multiplication (documented by the author), default secret: a ^ secret[1] == 0 => product 0, 9-byte keys")
 
 
 def wy_bv(key, seed):
@@ -238,7 +244,7 @@ def wyhash_preimage(ctx):
     b = seed1 ^ 1
     pin = lambda key: [key.u(8, 4).eq(b & 0xFFFFFFFF), key.u(12, 4).eq(b >> 32)]
     return smt.solve_preimage(wy_bv, ctx.target, 16, ctx=ctx, seed=ctx.seed, bits=64, constraints=pin,
-                              work="z3 on 16-byte key with b ^ seed' pinned to 1")
+                              work="z3 on 16-byte key with b ^ seed' pinned to 1", raise_timeout=True)
 
 
 # =============================================================================== SipHash-2-4
@@ -286,16 +292,16 @@ def sip_bv(key, seed):
 def siphash_preimage(ctx):
     """Known seed = known 128-bit key, 8-byte message: 8 SipRounds of add/rotate/xor and a 64-bit unknown; for a PRF
     this is a 2^64 problem. We only try the generic solver; anything stronger than 'not found (2 min)' is not claimed."""
-    return smt.solve_preimage(sip_bv, ctx.target, 8, ctx=ctx, seed=ctx.seed, bits=64, work="z3 on 8-byte key")
+    return smt.solve_preimage(sip_bv, ctx.target, 8, ctx=ctx, seed=ctx.seed, bits=64, work="z3 on 8-byte key", raise_timeout=True)
 
 
 @attack("SipHash", "collision", 64, method="z3 SMT, two 8-byte keys at the known seed (expected: not found; birthday 2^32 not claimed)",
         expect="notfound", fast=False)
 def siphash_collision(ctx):
-    return smt.solve_collision(sip_bv, 8, ctx=ctx, seeds=(ctx.seed,), work="z3, two 8-byte keys")
+    return smt.solve_collision(sip_bv, 8, ctx=ctx, seeds=(ctx.seed,), work="z3, two 8-byte keys", raise_timeout=True)
 
 
 @attack("SipHash", "seed-independent collision", 64, method="z3 SMT, two 8-byte keys equal at 3 seeds (expected: not found)",
         expect="notfound", fast=False)
 def siphash_sic(ctx):
-    return smt.solve_collision(sip_bv, 8, ctx=ctx, seeds=(0, 1, 0x80000000), work="z3, two 8-byte keys, 3 seeds")
+    return smt.solve_collision(sip_bv, 8, ctx=ctx, seeds=(0, 1, 0x80000000), work="z3, two 8-byte keys, 3 seeds", raise_timeout=True)
