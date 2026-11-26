@@ -18,8 +18,7 @@ jobs:
         run: git rev-parse HEAD
       - name: write the check program
         run: |
-          mkdir -p nv
-          cat > nv/nv.cpp <<'EOF'
+          cat > nv_check.cpp <<'EOF'
           #include "Platform.h"
           #include "Hashes.h"
           #include <stdio.h>
@@ -53,7 +52,7 @@ jobs:
           }
           EOF
           cat >> CMakeLists.txt <<'EOF'
-          add_executable(nv EXCLUDE_FROM_ALL nv/nv.cpp)
+          add_executable(nv EXCLUDE_FROM_ALL nv_check.cpp)
           target_link_libraries(nv SMHasherSupport ${HIGHWAY_LIB} ${BLAKE3_LIB} ${AHASH_C_LIB} ${CMAKE_THREAD_LIBS_INIT})
           EOF
       - name: build
