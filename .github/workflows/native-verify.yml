@@ -1,0 +1,116 @@
+name: native-verify
+# Independent re-check of the prover's published keys (Konrad, 26.11.2026).
+# Builds rurban's unchanged base (a982b80) and hashes every key with a small
+# program that calls the C hash functions directly - no prover code involved.
+on:
+  push:
+    branches: [ 'verify/native-2611' ]
+  workflow_dispatch:
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: a982b80da2b9ec0ed5c4a557ce4ed1fe89f82a09
+          submodules: recursive
+      - name: base commit
+        run: git rev-parse HEAD
+      - name: write the check program
+        run: |
+          mkdir -p nv
+          cat > nv/nv.cpp <<'EOF'
+          #include "Platform.h"
+          #include "Hashes.h"
+          #include <stdio.h>
+          #include <string.h>
+          #include <stdlib.h>
+          #include <vector>
+          struct H { const char *name; pfHash f; int bits; };
+          static H hs[] = {
+            {"FNV1a", FNV32a_test, 32}, {"FNV64", FNV64a_test, 64},
+            {"Murmur2", MurmurHash2_test, 32}, {"Murmur2B", MurmurHash64A_test, 64},
+            {"Murmur3A", MurmurHash3_x86_32, 32}, {"Murmur3C", MurmurHash3_x86_128, 128},
+            {"Murmur3F", MurmurHash3_x64_128, 128},
+            {"xxHash32", xxHash32_test, 32}, {"xxHash64", xxHash64_test, 64},
+            {"crc32", crc32, 32},
+            {"City64", CityHash64_test, 64}, {"City64noSeed", CityHash64noSeed_test, 64},
+            {"City64low", CityHash64_low_test, 32}, {"wyhash", wyhash_test, 64},
+          };
+          int main(int argc, char **argv) {
+            if (argc != 4) { fprintf(stderr, "nv <hash> <seed> <keyhex|->\n"); return 2; }
+            H *h = 0;
+            for (auto &x : hs) if (!strcmp(x.name, argv[1])) h = &x;
+            if (!h) { fprintf(stderr, "unknown %s\n", argv[1]); return 2; }
+            uint32_t seed = (uint32_t)strtoull(argv[2], 0, 0);
+            std::vector<uint8_t> k; const char *s = argv[3];
+            if (strcmp(s, "-")) for (size_t i = 0; s[i] && s[i+1]; i += 2) { char w[3] = {s[i], s[i+1], 0}; k.push_back((uint8_t)strtoul(w, 0, 16)); }
+            uint8_t out[64]; memset(out, 0, sizeof out);
+            h->f(k.data(), (int)k.size(), seed, out);
+            for (int i = 0; i < h->bits / 8; i++) printf("%02x", out[i]);
+            printf("\n");
+            return 0;
+          }
+          EOF
+          cat >> CMakeLists.txt <<'EOF'
+          add_executable(nv EXCLUDE_FROM_ALL nv/nv.cpp)
+          target_link_libraries(nv SMHasherSupport ${HIGHWAY_LIB} ${BLAKE3_LIB} ${AHASH_C_LIB} ${CMAKE_THREAD_LIBS_INIT})
+          EOF
+      - name: build
+        run: |
+          cmake -S . -B build -DGITHUB_ACTIONS=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target nv -j4
+      - name: check the published keys
+        run: |
+          NV=./build/nv; bad=0
+          SEEDS="0 1 2 0x7f 0x80000000 0xffffffff 0xdeadbeef 0x12345678 0x9e3779b9 0x2a6d1c03 0x5b0f88e1 0xc3a5c85c 0x0badf00d 0x71c4e2b6 0xe0d1a9f7 0x4f3b2a19"
+          pre() { n=$1; b=$2; k=$3
+            t=$(printf 'smhasher collision prover: %s' "$n" | sha256sum | cut -c1-$((b/4)))
+            d=$($NV "$n" 0 "$k")
+            if [ "$d" = "$t" ]; then echo "PREIMAGE OK   $n key=$k seed=0 hash=$d target=sha256('smhasher collision prover: $n')[:$((b/8))]=$t"
+            else echo "PREIMAGE FAIL $n key=$k hash=$d target=$t"; bad=1; fi; }
+          eqall() { n=$1; s=$2; shift 2; d0=$($NV "$n" "$s" "$1"); for k in "$@"; do d=$($NV "$n" "$s" "$k"); [ "$d" = "$d0" ] || return 1; done; echo "$d0"; }
+          coll() { n=$1; s=$2; shift 2
+            if d=$(eqall "$n" "$s" "$@"); then echo "COLLISION OK  $n seed=$s keys=$* hash=$d"; else echo "COLLISION FAIL $n seed=$s keys=$*"; bad=1; fi; }
+          sic() { n=$1; shift; ok=0; tot=0; line=""
+            for s in $SEEDS; do tot=$((tot+1)); if d=$(eqall "$n" "$s" "$@"); then ok=$((ok+1)); line="$line $s:$d"; else line="$line $s:DIFF"; fi; done
+            # control: the first key with its first byte flipped must hash differently at seed 0
+            k1=$1; f=$(printf '%02x' $(( 0x${k1:0:2} ^ 0x01 )))${k1:2}
+            c0=$($NV "$n" 0 "$k1"); c1=$($NV "$n" 0 "$f")
+            if [ "$ok" = "$tot" ] && [ "$c0" != "$c1" ]; then echo "SIC OK        $n keys=$* equal at $ok/$tot seeds;$line; control $f -> $c1 != $c0"
+            else echo "SIC FAIL      $n keys=$* equal at $ok/$tot seeds;$line; control $c1 vs $c0"; bad=1; fi; }
+          echo "--- PR 1"
+          pre FNV1a 32 0133e4bc9d
+          echo "--- PR 2"
+          pre Murmur2 32 9766d2a7
+          pre Murmur2B 64 11063d8c5620ba9e
+          pre Murmur3A 32 4372d780
+          coll Murmur2B 0 efcdab896745230178695a4b3c2d1e0f 60ab635d24b3ef68
+          sic Murmur2 674523010c8fc88418bf5a9fb1d1f40a 674523010c8fc88498e0cd5131b08158 e76696b38cb03b3718bf5a9fb1d1f40a e76696b38cb03b3798e0cd5131b08158
+          sic Murmur2B efcdab89674523011032547698badcfe efcd68a3022bcb8f1032975cfdd43470
+          sic Murmur3A 67452301efcdab89 bfe6a56defcdfa4d
+          echo "--- PR 3"
+          pre Murmur3C 128 11bcdc7e26c2d1a640b3c34218c7d0ce
+          pre Murmur3F 128 a2db9669b2d9041c7b0f404a8394a490
+          pre xxHash32 32 c414e75f
+          pre xxHash64 64 1048b5332ec58fac
+          sic Murmur3C 73e53aaeee908329b8fc4f5f0439b16afc17d2ef 7e164a4dee908329b8fc4f5f8393f514fc17e543
+          sic Murmur3F 7fdfedc5581260996bdd17f515cf2243666653b123cc2154 df7febe7fc85b561adbdb04865a1a6e3666653b1a67e53d1
+          sic xxHash64 f7f0c748d81f3db3871ec1e89e1cb0ed 17e4c6b0da6ac5d3871ec1e8efd022d7
+          echo "--- PR 4"
+          pre FNV64 64 3f2b2bc76326282af72104d196
+          coll FNV64 0 4142434445464748494a4b4c4d4e4f5051 3075bc95fbef4f461d0679a399098f1a0a
+          pre crc32 32 56141920
+          sic crc32 0000000000 0196300777
+          echo "--- PR 5"
+          pre City64 64 f184ee1f5b310c7d447370032e8a191345b961ffef07b86a30f9b867026ffa48
+          pre City64noSeed 64 f184ee1f5b310c7d447370032e8a19130d2bcbe04547defa30f9b867026ffa48
+          pre City64low 32 f184ee1f5b310c7d447370032e8a1913fec9f816abe95bab30f9b867026ffa48
+          sic City64 58331ebc542b8094000000000000000069a5d3e57cd5e5e40000000000000000 58331ebc99683bec01000000000000002500ef625ac0907b000000006fde087c
+          coll City64noSeed 0 58331ebc542b8094000000000000000069a5d3e57cd5e5e40000000000000000 58331ebc99683bec01000000000000002500ef625ac0907b000000006fde087c
+          sic City64low 58331ebc542b8094000000000000000069a5d3e57cd5e5e40000000000000000 58331ebc99683bec01000000000000002500ef625ac0907b000000006fde087c
+          sic wyhash 934bb88bc9ac2e9600 934bb88bc9ac2e9601
+          echo "--- sanity: known VerifyAll-independent values"
+          echo "FNV1a('') seed 0 = $($NV FNV1a 0 -)   (FNV-1a 32 offset basis 811c9dc5 -> memory order c59d1c81)"
+          echo "crc32('123456789') seed 0 = $($NV crc32 0 313233343536373839)   (standard check value cbf43926 -> memory order 2639f4cb)"
+          [ $bad = 0 ] && echo "ALL NATIVE CHECKS OK" || { echo "SOME NATIVE CHECK FAILED"; exit 1; }
